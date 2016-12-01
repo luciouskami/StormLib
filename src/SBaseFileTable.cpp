@@ -581,11 +581,9 @@ int ConvertMpqHeaderToFormat4(
 // Hash entry verification when the file table does not exist yet
 bool IsValidHashEntry(TMPQArchive * ha, TMPQHash * pHash)
 {
-    TFileEntry * pFileEntry = ha->pFileTable + MPQ_BLOCK_INDEX(pHash->dwBlockIndex);
-    DWORD dwBlockIndex = MPQ_BLOCK_INDEX(pHash->dwBlockIndex);
+    TFileEntry * pFileEntry = ha->pFileTable + MPQ_BLOCK_INDEX(pHash);
     
-    pFileEntry = ha->pFileTable + dwBlockIndex;
-    return ((dwBlockIndex < ha->dwFileTableSize) && (pFileEntry->dwFlags & MPQ_FILE_EXISTS)) ? true : false;
+    return ((MPQ_BLOCK_INDEX(pHash) < ha->dwFileTableSize) && (pFileEntry->dwFlags & MPQ_FILE_EXISTS)) ? true : false;
 }
 
 // Hash entry verification when the file table does not exist yet
@@ -593,20 +591,12 @@ static bool IsValidHashEntry1(TMPQArchive * ha, TMPQHash * pHash, TMPQBlock * pB
 {
     ULONGLONG ByteOffset;    
     TMPQBlock * pBlock;
-    DWORD dwBlockIndex;
-
-    // We need to mask out the upper 4 bits of the block table index.
-    // This is because it gets shifted out when calculating block table offset
-    // BlockTableOffset = pHash->dwBlockIndex * 0x10
-    // Malformed MPQ maps may contain invalid entries
-    // Note that Storm.dll does not perfom this check
-    dwBlockIndex = MPQ_BLOCK_INDEX(pHash->dwBlockIndex);
 
     // The block index is considered valid if it's less than block table size
-    if(dwBlockIndex < ha->pHeader->dwBlockTableSize)
+    if(MPQ_BLOCK_INDEX(pHash) < ha->pHeader->dwBlockTableSize)
     {
         // Calculate the block table position
-        pBlock = pBlockTable + dwBlockIndex;
+        pBlock = pBlockTable + MPQ_BLOCK_INDEX(pHash);
 
         // Check whether this is an existing file
         // Also we do not allow to be file size greater than 2GB
@@ -622,32 +612,42 @@ static bool IsValidHashEntry1(TMPQArchive * ha, TMPQHash * pHash, TMPQBlock * pB
 }
 
 // Returns a hash table entry in the following order:
-// 1) A hash table entry with the preferred locale
-// 2) A hash table entry with the neutral locale
+// 1) A hash table entry with the preferred locale and platform
+// 2) A hash table entry with the neutral|matching locale and neutral|matching platform
 // 3) NULL
-static TMPQHash * GetHashEntryLocale(TMPQArchive * ha, const char * szFileName, LCID lcLocale)
+// Storm_2016.dll: 15020940
+static TMPQHash * GetHashEntryLocale(TMPQArchive * ha, const char * szFileName, LCID lcLocale, BYTE Platform)
 {
-    TMPQHash * pHashNeutral = NULL;
     TMPQHash * pFirstHash = GetFirstHashEntry(ha, szFileName);
+    TMPQHash * pBestEntry = NULL;
     TMPQHash * pHash = pFirstHash;
 
     // Parse the found hashes
     while(pHash != NULL)
     {
-        // If the locales match, return it
-        if(lcLocale == pHash->lcLocale)
+        // Storm_2016.dll: 150209CB
+        // If the hash entry matches both locale and platform, return it immediately
+        // Note: We only succeed this check if the locale is non-neutral, because
+        // some Warcraft III maps have several items with neutral locale&platform, which leads
+        // to wrong item being returned
+        if((lcLocale || Platform) && pHash->lcLocale == lcLocale && pHash->Platform == Platform)
             return pHash;
-        
-        // If we found neutral hash, remember it
-        if(pHash->lcLocale == 0)
-            pHashNeutral = pHash;
+
+        // Storm_2016.dll: 150209D9
+        // If (locale matches or is neutral) OR (platform matches or is neutral)
+        // remember this as the best entry
+        if(pHash->lcLocale == 0 || pHash->lcLocale == lcLocale)
+        {
+            if(pHash->Platform == 0 || pHash->Platform == Platform)
+                pBestEntry = pHash;
+        }
 
         // Get the next hash entry for that file
         pHash = GetNextHashEntry(ha, pFirstHash, pHash); 
     }
 
     // At the end, return neutral hash (if found), otherwise NULL
-    return pHashNeutral;
+    return pBestEntry;
 }
 
 // Returns a hash table entry in the following order:
@@ -711,7 +711,7 @@ static TMPQHash * DefragmentHashTable(
 
     // Calculate how many entries in the hash table we really need
     dwFirstFreeEntry = (DWORD)(pTarget - pHashTable);
-    dwNewTableSize = GetHashTableSizeForFileCount(dwFirstFreeEntry);
+    dwNewTableSize = GetNearestPowerOfTwo(dwFirstFreeEntry);
 
     // Fill the rest with entries that look like deleted
     pHashTableEnd = pHashTable + dwNewTableSize;
@@ -787,28 +787,28 @@ static int BuildFileTableFromBlockTable(
         // - Multiple hash entries (different file name) point to the same block entry
         //
         // Ignore all hash table entries where:
-        // - dwBlockIndex >= BlockTableSize
+        // - Block Index >= BlockTableSize
         // - Flags of the appropriate block table entry
         //
 
         if(IsValidHashEntry1(ha, pHash, pBlockTable))
         {
-            DWORD dwBlockIndex = MPQ_BLOCK_INDEX(pHash->dwBlockIndex);
-            DWORD dwNewIndex = MPQ_BLOCK_INDEX(pHash->dwBlockIndex);
+            DWORD dwOldIndex = MPQ_BLOCK_INDEX(pHash);
+            DWORD dwNewIndex = MPQ_BLOCK_INDEX(pHash);
 
             // Determine the new block index
             if(DefragmentTable != NULL)
             {
                 // Need to handle case when multiple hash
                 // entries point to the same block entry
-                if(DefragmentTable[dwBlockIndex] == HASH_ENTRY_FREE)
+                if(DefragmentTable[dwOldIndex] == HASH_ENTRY_FREE)
                 {
-                    DefragmentTable[dwBlockIndex] = dwItemCount;
+                    DefragmentTable[dwOldIndex] = dwItemCount;
                     dwNewIndex = dwItemCount++;
                 }
                 else
                 {
-                    dwNewIndex = DefragmentTable[dwBlockIndex];
+                    dwNewIndex = DefragmentTable[dwOldIndex];
                 }
 
                 // Fix the pointer in the hash entry
@@ -820,7 +820,7 @@ static int BuildFileTableFromBlockTable(
 
             // Get the pointer to the file entry and the block entry
             pFileEntry = ha->pFileTable + dwNewIndex;
-            pBlock = pBlockTable + dwBlockIndex;
+            pBlock = pBlockTable + dwOldIndex;
 
             // ByteOffset is only valid if file size is not zero
             pFileEntry->ByteOffset = pBlock->dwFilePos;
@@ -1813,12 +1813,12 @@ TFileEntry * GetFileEntryLocale2(TMPQArchive * ha, const char * szFileName, LCID
     // we will need the pointer to hash table entry
     if(ha->pHashTable != NULL)
     {
-        pHash = GetHashEntryLocale(ha, szFileName, lcLocale);
-        if(pHash != NULL && pHash->dwBlockIndex < ha->dwFileTableSize)
+        pHash = GetHashEntryLocale(ha, szFileName, lcLocale, 0);
+        if(pHash != NULL && MPQ_BLOCK_INDEX(pHash) < ha->dwFileTableSize)
         {
             if(PtrHashIndex != NULL)
                 PtrHashIndex[0] = (DWORD)(pHash - ha->pHashTable);
-            return ha->pFileTable + pHash->dwBlockIndex;
+            return ha->pFileTable + MPQ_BLOCK_INDEX(pHash);
         }
     }
 
@@ -1848,11 +1848,11 @@ TFileEntry * GetFileEntryExact(TMPQArchive * ha, const char * szFileName, LCID l
     if(ha->pHashTable != NULL)
     {
         pHash = GetHashEntryExact(ha, szFileName, lcLocale);
-        if(pHash != NULL && pHash->dwBlockIndex < ha->dwFileTableSize)
+        if(pHash != NULL && MPQ_BLOCK_INDEX(pHash) < ha->dwFileTableSize)
         {
             if(PtrHashIndex != NULL)
                 PtrHashIndex[0] = (DWORD)(pHash - ha->pHashTable);
-            return ha->pFileTable + pHash->dwBlockIndex;
+            return ha->pFileTable + MPQ_BLOCK_INDEX(pHash);
         }
     }
 
@@ -1997,7 +1997,8 @@ int RenameFileEntry(
         pHashEntry->dwName1      = 0xFFFFFFFF;
         pHashEntry->dwName2      = 0xFFFFFFFF;
         pHashEntry->lcLocale     = 0xFFFF;
-        pHashEntry->wPlatform    = 0xFFFF;
+        pHashEntry->Platform     = 0xFF;
+        pHashEntry->Reserved     = 0xFF;
         pHashEntry->dwBlockIndex = HASH_ENTRY_DELETED;
     }
 
@@ -2037,7 +2038,8 @@ int DeleteFileEntry(TMPQArchive * ha, TMPQFile * hf)
         pHashEntry->dwName1      = 0xFFFFFFFF;
         pHashEntry->dwName2      = 0xFFFFFFFF;
         pHashEntry->lcLocale     = 0xFFFF;
-        pHashEntry->wPlatform    = 0xFFFF;
+        pHashEntry->Platform     = 0xFF;
+        pHashEntry->Reserved     = 0xFF;
         pHashEntry->dwBlockIndex = HASH_ENTRY_DELETED;
     }
 
@@ -2640,11 +2642,11 @@ int DefragmentFileTable(TMPQArchive * ha)
 
                 for(pHash = ha->pHashTable; pHash < pHashTableEnd; pHash++)
                 {
-                    if(pHash->dwBlockIndex < ha->dwFileTableSize)
+                    if(MPQ_BLOCK_INDEX(pHash) < ha->dwFileTableSize)
 					{
 						// If that block entry is there, set it to the hash entry
 						// If not, set it as DELETED
-						dwNewBlockIndex = DefragmentTable[pHash->dwBlockIndex];
+						dwNewBlockIndex = DefragmentTable[MPQ_BLOCK_INDEX(pHash)];
 						pHash->dwBlockIndex = (dwNewBlockIndex != HASH_ENTRY_FREE) ? dwNewBlockIndex : HASH_ENTRY_DELETED;
 					}
                 }
@@ -2753,7 +2755,7 @@ int RebuildFileTable(TMPQArchive * ha, DWORD dwNewHashTableSize)
         {
             if(IsValidHashEntry(ha, pHash))
             {
-                pFileEntry = ha->pFileTable + pHash->dwBlockIndex;
+                pFileEntry = ha->pFileTable + MPQ_BLOCK_INDEX(pHash);
                 AllocateHashEntry(ha, pFileEntry, pHash->lcLocale);
             }
         }

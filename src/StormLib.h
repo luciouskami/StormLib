@@ -230,7 +230,12 @@ extern "C" {
                                   MPQ_FILE_SIGNATURE     |  \
                                   MPQ_FILE_EXISTS)
 
-#define MPQ_BLOCK_INDEX(bi) ((bi) & 0x0FFFFFFF) // Index mask for block table index
+// We need to mask out the upper 4 bits of the block table index.
+// This is because it gets shifted out when calculating block table offset
+// BlockTableOffset = pHash->dwBlockIndex << 0x04
+// Malformed MPQ maps may contain block indexes like 0x40000001 or 0xF0000023
+#define BLOCK_INDEX_MASK          0x0FFFFFFF
+#define MPQ_BLOCK_INDEX(pHash) (pHash->dwBlockIndex & BLOCK_INDEX_MASK)
 
 // Compression types for multiple compressions
 #define MPQ_COMPRESSION_HUFFMANN          0x01  // Huffmann compression (used on WAVE files only)
@@ -612,12 +617,13 @@ typedef struct _TMPQHash
 
     // The platform the file is used for. 0 indicates the default platform.
     // No other values have been observed.
-    // Note: wPlatform is actually just BYTE, but since it has never been used, we don't care.
-    USHORT wPlatform;
+    BYTE   Platform;
+    BYTE   Reserved;
 
 #else
 
-    USHORT wPlatform;
+    BYTE   Platform;
+    BYTE   Reserved;
     USHORT lcLocale;
 
 #endif
@@ -1079,8 +1085,8 @@ int    WINAPI SCompDecompress2(void * pvOutBuffer, int * pcbOutBuffer, void * pv
 
 #ifndef PLATFORM_WINDOWS
 
-void  SetLastError(int err);
-int   GetLastError();
+void  SetLastError(DWORD err);
+DWORD   GetLastError();
 
 #endif
 

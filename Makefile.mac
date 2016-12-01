@@ -263,8 +263,8 @@ all: $(LIBRARY)
 #install: $(LIBRARY)
 #   install $(LIBRARY) /usr/local/lib
 #   mkdir -p /usr/local/include/StormLib
-#   cp StormLib.h /usr/local/include/StormLib
-#   cp StormPort.h /usr/local/include/StormLib
+#   cp src/StormLib.h /usr/local/include/StormLib
+#   cp src/StormPort.h /usr/local/include/StormLib
 
 $(LIBRARY): $(COBJS) $(OBJS)
 	$(CPP) $(CFLAGS) $(DFLAGS) $(ARCH) $(LFLAGS) -shared -o $(LIBRARY) $(COBJS) $(OBJS)

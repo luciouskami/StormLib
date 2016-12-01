@@ -21,5 +21,3 @@ copy .\bin\StormLib\%1\%2\*.lib    ..\aaa\lib64
 goto exit
 
 :exit
-
-

@@ -24,14 +24,18 @@
 
 int main()
 {
+    LPCSTR szArchiveName = "e:\\Multimedia\\MPQs\\1995 - Test MPQs\\MPQ_2016_v1_123.w3x";
     HANDLE hMpq = NULL;
     HANDLE hFile = NULL;
+    BYTE Buffer[0x100];
+    DWORD dwBytesRead = 0;
 
-    if(StormOpenArchive("e:\\Multimedia\\MPQs\\1995 - Test MPQs\\MPQ_2015_v1_MessListFile.mpq", 0, 0, &hMpq))
+    if(StormOpenArchive(szArchiveName, 0, 0, &hMpq))
     {                             
-        _asm int 3;
-        if(StormOpenFileEx(hMpq, "\\\\\\*¹BTNGoblinPyrotechnician.blp", 0, &hFile))
+        if(StormOpenFileEx(hMpq, "war3map.j", 0, &hFile))
         {
+            dwBytesRead = StormGetFileSize(hFile, NULL);
+            StormReadFile(hFile, Buffer, sizeof(Buffer), &dwBytesRead, NULL); 
             StormCloseFile(hFile);
         }
 

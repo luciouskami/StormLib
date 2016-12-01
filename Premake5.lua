@@ -22,7 +22,7 @@ solution 'StormLib'
         'src/pklib/crc32.c',
         'src/zlib/compress.c',
     }
-
+	
     filter 'configurations:Debug*'
         flags { 'Symbols' }
         defines { '_DEBUG' }
